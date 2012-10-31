@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-3.0.xsd">
+
+    <bean id="VFStoreProvider" class="org.jahia.services.content.impl.external.ExternalContentStoreProvider"  parent="AbstractJCRStoreProvider">
+        <property name="key" value="vfs"/>
+        <property name="dataSource">
+            <bean class="org.jahia.services.content.impl.external.vfs.VFSDataSource">
+                <property name="root" value="file:///tmp" />
+            </bean>
+        </property>
+        <property name="mountPoint" value="/vfs"/>
+    </bean>
+
+</beans>
