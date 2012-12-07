@@ -40,13 +40,18 @@
 
 package org.jahia.services.content.impl.external;
 
-import javax.jcr.*;
 import java.io.InputStream;
 import java.math.BigDecimal;
-import java.text.DateFormat;
-import java.text.ParseException;
 import java.util.Calendar;
-import java.util.Date;
+
+import javax.jcr.Binary;
+import javax.jcr.Node;
+import javax.jcr.PropertyType;
+import javax.jcr.RepositoryException;
+import javax.jcr.ValueFactory;
+import javax.jcr.ValueFormatException;
+
+import org.apache.jackrabbit.util.ISO8601;
 
 /**
  * 
@@ -67,15 +72,7 @@ public class ExternalValueFactoryImpl implements ValueFactory {
             case PropertyType.BOOLEAN :
                 return createValue(Boolean.parseBoolean(value));
             case PropertyType.DATE :
-                Date date = null;
-                try {
-                    date = DateFormat.getInstance().parse(value);
-                    Calendar calendar = Calendar.getInstance();
-                    calendar.setTime(date);
-                    return createValue(calendar);
-                } catch (ParseException e) {
-                    throw new ValueFormatException("Error converting value [" + value +"] to calendar value");
-                }                
+                return createValue(ISO8601.parse(value));
             case PropertyType.DECIMAL :
                 return createValue(new BigDecimal(value));
             case PropertyType.DOUBLE :
@@ -88,6 +85,12 @@ public class ExternalValueFactoryImpl implements ValueFactory {
                 return createValue(value);
             case PropertyType.WEAKREFERENCE :
                 return new ExternalValueImpl(value, PropertyType.WEAKREFERENCE);
+            case PropertyType.NAME :
+                return createValue(value);
+            case PropertyType.PATH :
+                return createValue(value);
+            case PropertyType.URI :
+                return createValue(value);
         }
         throw new ValueFormatException("Unsupported value type " + type);
     }

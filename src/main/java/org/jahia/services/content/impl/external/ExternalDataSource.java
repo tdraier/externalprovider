@@ -8,8 +8,6 @@ import java.util.Map;
 public interface ExternalDataSource {
     boolean isSupportsUuid();
 
-    boolean isSupportsSearch();
-
     List<String> getSupportedNodeTypes();
 
     ExternalData getItemByIdentifier(String identifier) throws ItemNotFoundException;
@@ -18,10 +16,21 @@ public interface ExternalDataSource {
 
     List<String> getChildren(String path);
 
-    void removeItemByPath(String path) throws PathNotFoundException;
+    public interface LazyPropery {
+        String[] getPropertyValues(String path, String propertyName) throws PathNotFoundException;
+    }
 
-    void saveItem(ExternalData data) throws PathNotFoundException;
+    public interface Writable {
+        void saveItem(ExternalData data) throws PathNotFoundException;
 
-    List<String> search(String basePath, String type, Map<String, String> constraints, String orderBy, int limit);
+        void move(String oldPath, String newPath) throws PathNotFoundException;
+
+        void removeItemByPath(String path) throws PathNotFoundException;
+    }
+
+    public interface Searchable {
+        List<String> search(String basePath, String type, Map<String, String> constraints, String orderBy, int limit);
+    }
+
 
 }

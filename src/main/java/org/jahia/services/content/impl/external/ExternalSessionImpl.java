@@ -40,11 +40,18 @@
 
 package org.jahia.services.content.impl.external;
 
+import org.apache.commons.lang.StringUtils;
+import org.hibernate.Criteria;
+import org.hibernate.HibernateException;
+import org.hibernate.SessionFactory;
+import org.hibernate.StatelessSession;
+import org.hibernate.criterion.Restrictions;
 import org.jahia.services.content.JCRSessionFactory;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
 import javax.jcr.*;
+import javax.jcr.Session;
 import javax.jcr.lock.LockException;
 import javax.jcr.nodetype.ConstraintViolationException;
 import javax.jcr.nodetype.NoSuchNodeTypeException;
@@ -55,16 +62,17 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.AccessControlException;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * JCR session implementation for VFS provider.
+ *
  * @author toto
- * Date: Apr 23, 2008
- * Time: 11:56:11 AM
+ *         Date: Apr 23, 2008
+ *         Time: 11:56:11 AM
  */
 public class ExternalSessionImpl implements Session {
     private ExternalRepositoryImpl repository;
@@ -109,9 +117,40 @@ public class ExternalSessionImpl implements Session {
     }
 
     public Node getNodeByUUID(String uuid) throws ItemNotFoundException, RepositoryException {
-        if (!repository.getDataSource().isSupportsUuid()) {
-            throw new ItemNotFoundException("This repository does not support UUID as identifiers");
+        if (!repository.getDataSource().isSupportsUuid() || uuid.startsWith("translation:")) {
+            // Translate uuid to external mapping
+            SessionFactory hibernateSession = repository.getStoreProvider().getHibernateSession();
+            StatelessSession statelessSession = hibernateSession.openStatelessSession();
+            try {
+                Criteria criteria = statelessSession.createCriteria(UuidMapping.class);
+                criteria.add(Restrictions.eq("internalUuid", uuid));
+                List list = criteria.list();
+                if (list.size() > 0) {
+                    uuid = ((UuidMapping) list.get(0)).getExternalId();
+                } else {
+                    throw new ItemNotFoundException("Item " + uuid + " could not been found in this repository");
+                }
+            } finally {
+                statelessSession.close();
+            }
         }
+        return getNodeByLocalIdentifier(uuid);
+    }
+
+    private Node getNodeByLocalIdentifier(String uuid) throws RepositoryException {
+        for (ExternalData d : changedData.values()) {
+            if (uuid.equals(d.getId())) {
+                return new ExternalNodeImpl(d, this);
+            }
+        }
+
+        if (uuid.startsWith("translation:")) {
+            String u = StringUtils.substringAfter(uuid, "translation:");
+            String lang = StringUtils.substringBefore(u, ":");
+            u = StringUtils.substringAfter(u, ":");
+            return getNodeByLocalIdentifier(u).getNode("j:translation_" + lang);
+        }
+
         Node n = new ExternalNodeImpl(repository.getDataSource().getItemByIdentifier(uuid), this);
         if (deletedData.containsKey(n.getPath())) {
             throw new ItemNotFoundException("This node has been deleted");
@@ -120,11 +159,28 @@ public class ExternalSessionImpl implements Session {
     }
 
     public Item getItem(String path) throws PathNotFoundException, RepositoryException {
+        path = path.length() > 1 && path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
         if (deletedData.containsKey(path)) {
             throw new PathNotFoundException("This node has been deleted");
         }
-        ExternalData object = repository.getDataSource().getItemByPath(path);
-        return new ExternalNodeImpl(object, this);
+        if (changedData.containsKey(path)) {
+            return new ExternalNodeImpl(changedData.get(path), this);
+        }
+        if (StringUtils.substringAfterLast(path, "/").startsWith("j:translation_")) {
+            String nodeName = StringUtils.substringAfterLast(path, "/");
+            String lang = StringUtils.substringAfterLast(nodeName, "_");
+            ExternalData parentObject = repository.getDataSource().getItemByPath(StringUtils.substringBeforeLast(path,
+                    "/"));
+            if (parentObject.getI18nProperties() == null || !parentObject.getI18nProperties().containsKey(lang)) {
+                throw new PathNotFoundException(path);
+            }
+            Map<String, String[]> i18nProps = new HashMap<String, String[]>(parentObject.getI18nProperties().get(lang));
+            i18nProps.put("jcr:language", new String[]{lang});
+            ExternalData i18n = new ExternalData("translation:" + lang + ":" + parentObject.getId(), path,
+                    "jnt:translation", i18nProps);
+            return new ExternalNodeImpl(i18n, this);
+        }
+        return new ExternalNodeImpl(repository.getDataSource().getItemByPath(path), this);
     }
 
     public boolean itemExists(String path) throws RepositoryException {
@@ -139,18 +195,29 @@ public class ExternalSessionImpl implements Session {
         return false;
     }
 
-    public void move(String source, String dest) throws ItemExistsException, PathNotFoundException, VersionException, ConstraintViolationException, LockException, RepositoryException {
+    public void move(String source, String dest)
+            throws ItemExistsException, PathNotFoundException, VersionException, ConstraintViolationException, LockException, RepositoryException {
+        //todo : store move in session and move node in save
+        if (repository.getDataSource() instanceof ExternalDataSource.Writable) {
+            ((ExternalDataSource.Writable) repository.getDataSource()).move(source, dest);
+        } else {
+            throw new UnsupportedRepositoryOperationException();
+        }
     }
 
-    public void save() throws AccessDeniedException, ItemExistsException, ConstraintViolationException, InvalidItemStateException, VersionException, LockException, NoSuchNodeTypeException, RepositoryException {
-        for(ExternalData data: changedData.values()) {
-            repository.getDataSource().saveItem(data);
+    public void save()
+            throws AccessDeniedException, ItemExistsException, ConstraintViolationException, InvalidItemStateException, VersionException, LockException, NoSuchNodeTypeException, RepositoryException {
+        if (repository.getDataSource() instanceof ExternalDataSource.Writable) {
+            ExternalDataSource.Writable writableDataSource = (ExternalDataSource.Writable) repository.getDataSource();
+            for (ExternalData data : changedData.values()) {
+                writableDataSource.saveItem(data);
+            }
+            changedData.clear();
+            for (String path : deletedData.keySet()) {
+                writableDataSource.removeItemByPath(path);
+            }
+            deletedData.clear();
         }
-        changedData.clear();
-        for (String path : deletedData.keySet()) {
-            repository.getDataSource().removeItemByPath(path);
-        }
-        deletedData.clear();
     }
 
     public void refresh(boolean b) throws RepositoryException {
@@ -164,7 +231,8 @@ public class ExternalSessionImpl implements Session {
         return false;
     }
 
-    public ExternalValueFactoryImpl getValueFactory() throws UnsupportedRepositoryOperationException, RepositoryException {
+    public ExternalValueFactoryImpl getValueFactory()
+            throws UnsupportedRepositoryOperationException, RepositoryException {
         return new ExternalValueFactoryImpl();
     }
 
@@ -172,27 +240,33 @@ public class ExternalSessionImpl implements Session {
 
     }
 
-    public ContentHandler getImportContentHandler(String s, int i) throws PathNotFoundException, ConstraintViolationException, VersionException, LockException, RepositoryException {
+    public ContentHandler getImportContentHandler(String s, int i)
+            throws PathNotFoundException, ConstraintViolationException, VersionException, LockException, RepositoryException {
         return null;
     }
 
-    public void importXML(String s, InputStream inputStream, int i) throws IOException, PathNotFoundException, ItemExistsException, ConstraintViolationException, VersionException, InvalidSerializedDataException, LockException, RepositoryException {
+    public void importXML(String s, InputStream inputStream, int i)
+            throws IOException, PathNotFoundException, ItemExistsException, ConstraintViolationException, VersionException, InvalidSerializedDataException, LockException, RepositoryException {
 
     }
 
-    public void exportSystemView(String s, ContentHandler contentHandler, boolean b, boolean b1) throws PathNotFoundException, SAXException, RepositoryException {
+    public void exportSystemView(String s, ContentHandler contentHandler, boolean b, boolean b1)
+            throws PathNotFoundException, SAXException, RepositoryException {
 
     }
 
-    public void exportSystemView(String s, OutputStream outputStream, boolean b, boolean b1) throws IOException, PathNotFoundException, RepositoryException {
+    public void exportSystemView(String s, OutputStream outputStream, boolean b, boolean b1)
+            throws IOException, PathNotFoundException, RepositoryException {
 
     }
 
-    public void exportDocumentView(String s, ContentHandler contentHandler, boolean b, boolean b1) throws PathNotFoundException, SAXException, RepositoryException {
+    public void exportDocumentView(String s, ContentHandler contentHandler, boolean b, boolean b1)
+            throws PathNotFoundException, SAXException, RepositoryException {
 
     }
 
-    public void exportDocumentView(String s, OutputStream outputStream, boolean b, boolean b1) throws IOException, PathNotFoundException, RepositoryException {
+    public void exportDocumentView(String s, OutputStream outputStream, boolean b, boolean b1)
+            throws IOException, PathNotFoundException, RepositoryException {
 
     }
 
@@ -260,7 +334,8 @@ public class ExternalSessionImpl implements Session {
         return itemExists(absPath);
     }
 
-    public void removeItem(String absPath) throws VersionException, LockException, ConstraintViolationException, AccessDeniedException, RepositoryException {
+    public void removeItem(String absPath)
+            throws VersionException, LockException, ConstraintViolationException, AccessDeniedException, RepositoryException {
         getItem(absPath).remove();
     }
 
@@ -274,7 +349,8 @@ public class ExternalSessionImpl implements Session {
         return false;
     }
 
-    public AccessControlManager getAccessControlManager() throws UnsupportedRepositoryOperationException, RepositoryException {
+    public AccessControlManager getAccessControlManager()
+            throws UnsupportedRepositoryOperationException, RepositoryException {
         return repository.getAccessControlManager();
     }
 

@@ -11,6 +11,7 @@
             </bean>
         </property>
         <property name="mountPoint" value="/vfs"/>
+        <property name="hibernateSession" ref="sessionFactory"/>
     </bean>
 
 </beans>
